@@ -1,0 +1,29 @@
+# rust
+/target/
+**/target/
+Cargo.lock
+
+# aya build artifacts
+*.o
+*.bpf.o
+
+# vm stuff — these are huge and nobody wants them in git history
+*.qcow2
+*.img
+*.iso
+
+# editor noise
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# os noise
+.DS_Store
+Thumbs.db
+
+# env / secrets, if any ever sneak in
+.env
+*.pem
+*.key

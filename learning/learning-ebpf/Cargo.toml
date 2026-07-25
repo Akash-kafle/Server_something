@@ -1,0 +1,17 @@
+[package]
+name = "learning-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+learning-common = { path = "../learning-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+
+[[bin]]
+name = "learning"
+path = "src/main.rs"
