@@ -56,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
     let Opt { iface } = opt;
     let program: &mut Xdp = ebpf.program_mut("learning").unwrap().try_into()?;
     program.load()?;
-    program.attach(&iface, XdpMode::default())
+    program.attach(&iface, XdpMode::Skb)
         .context("failed to attach the XDP program with default mode - try changing XdpMode::default() to XdpMode::Skb")?;
 
     let ctrl_c = signal::ctrl_c();
