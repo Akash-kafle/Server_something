@@ -14,7 +14,7 @@ SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -p ${SSH_P
 NET_OPTS="-netdev user,id=net0,hostfwd=tcp::${SSH_PORT}-:22 -device virtio-net-pci,netdev=net0"
 
 normal_run() {
-    qemu-system-x86_64 \
+    qemu-system-x86_64 -cpu host \
         -name "$VM_NAME" \
         -enable-kvm \
         -m 4G \
@@ -29,7 +29,7 @@ headless_run() {
         echo "VM already running."
         return
     fi
-    qemu-system-x86_64 \
+    qemu-system-x86_64 -cpu host \
         -name "$VM_NAME" \
         -enable-kvm \
         -m 4G \
@@ -42,7 +42,7 @@ headless_run() {
 }
 
 reinstall_run() {
-    qemu-system-x86_64 \
+    qemu-system-x86_64 -cpu host \
         -name "$VM_NAME" \
         -enable-kvm \
         -m 4G \
@@ -139,15 +139,15 @@ stop_vm() {
 
 usage() {
     cat <<- USAGE
-	Usage: $0 <command>
+    Usage: $0 <command>
 
-	  gui         Start VM with display
-	  headless    Start VM in background, no display
-	  reinstall   Boot from install ISO
-	  keys        One-time SSH key setup (run this first)
-	  ssh         SSH into the running VM
-	  sync        rsync ${SRC_DIR}/ to the VM
-	  stop        Stop the running VM
+      gui         Start VM with display
+      headless    Start VM in background, no display
+      reinstall   Boot from install ISO
+      keys        One-time SSH key setup (run this first)
+      ssh         SSH into the running VM
+      sync        rsync ${SRC_DIR}/ to the VM
+      stop        Stop the running VM
 	USAGE
 }
 

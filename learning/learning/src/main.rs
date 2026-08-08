@@ -1,15 +1,21 @@
 use anyhow::Context as _;
-use aya::programs::{Xdp, XdpMode};
+use aya::{
+    maps::HashMap,
+    programs::{Xdp, XdpMode},
+};
+use std::net::Ipv4Addr;
 use clap::Parser;
+
 #[rustfmt::skip]
 use log::{debug, warn};
 use tokio::signal;
 
 #[derive(Debug, Parser)]
 struct Opt {
-    #[clap(short, long, default_value = "eth0")]
+    #[clap(short, long, default_value = "ens3")]
     iface: String,
 }
+
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -53,12 +59,23 @@ async fn main() -> anyhow::Result<()> {
             });
         }
     }
-    let Opt { iface } = opt;
+    // let Opt { iface } = opt;
     let program: &mut Xdp = ebpf.program_mut("learning").unwrap().try_into()?;
     program.load()?;
-    program.attach(&iface, XdpMode::Skb)
-        .context("failed to attach the XDP program with default mode - try changing XdpMode::default() to XdpMode::Skb")?;
+    program.attach(&opt.iface, XdpMode::Skb)
+        .context("failed to attach the XDP program with default mode - try changing XdpMode::default() to XdpMode::Skb")?;        
+    let [block_map, system_map] = ebpf.maps_disjoint_mut(["BLOCKLIST", "SYSTEM_LIST"]);
 
+let mut blocklist: HashMap<_, u32, u32> =
+    HashMap::try_from(block_map.unwrap())?;
+
+let mut systemlist: HashMap<_, u32, u32> =
+    HashMap::try_from(system_map.unwrap())?;
+    let block_addr: u32 = Ipv4Addr::new(0,0  ,0,0).into();
+    let system_addr: u32 = Ipv4Addr::new(10,0  ,2,2).into();
+
+    blocklist.insert(block_addr, 0, 0)?;
+    systemlist.insert(system_addr, 0, 0)?;
     let ctrl_c = signal::ctrl_c();
     println!("Waiting for Ctrl-C...");
     ctrl_c.await?;
