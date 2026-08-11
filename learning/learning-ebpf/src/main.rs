@@ -24,7 +24,7 @@ pub fn learning(ctx: XdpContext) -> u32 {
     }
 }
 
-#[inline(always)] // (1)
+#[inline(always)] 
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     let start = ctx.data();
     let end = ctx.data_end();
@@ -38,46 +38,49 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 }
 
 fn try_learning(ctx: XdpContext) -> Result<u32, ()> {
-    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; // (2)
+    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; 
     match unsafe { (*ethhdr).ether_type() } {
         Ok(EtherType::Ipv4) => {}
         _ => return Ok(xdp_action::XDP_PASS),
     }
 
-    // let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
+    let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
     // let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
-    // let proto = unsafe { (*ipv4hdr).proto() }
-    //     .map_err(|IpError::InvalidProto(_proto)| ())?;
+    let proto = unsafe { (*ipv4hdr).proto() }
+        .map_err(|IpError::InvalidProto(_proto)| ())?;
 
-    // let source_port = match proto {
-    //     IpProto::Tcp => {
-    //         let tcphdr: *const TcpHdr =
-    //             ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-    //         u16::from_be_bytes(unsafe { (*tcphdr).source })
-    //     }
-    //     IpProto::Udp => {
-    //         let udphdr: *const UdpHdr =
-    //             ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-    //         unsafe { (*udphdr).src_port() }
-    //     }
-    //     _ => return Err(()),
-    // };
+    let (tcphdr, udphdr): (Option<TcpHdr>, Option<UdpHdr>) = match proto  {
+        IpProto::Tcp => {
+            let tcphdr: *const TcpHdr =
+                ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            unsafe {(Some(*tcphdr),None)}
+        }
+        IpProto::Udp => {
+            let udphdr: *const UdpHdr =
+                ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+            unsafe { (None,Some(*udphdr)) }
+        }
+        _ => return Err(()),
+    };    
+    
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
     let source = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
-    let action = if block_ip(source) {
-        xdp_action::XDP_DROP
-    } else {
-        xdp_action::XDP_PASS
+    let action = 
+    match (system_ip(source), block_ip(source)) {
+        (true, _) => xdp_action::XDP_PASS,   // system IP always wins, regardless of blocklist
+        (false, true) => xdp_action::XDP_DROP,
+        (false, false) => xdp_action::XDP_PASS,
     };
 
     if !system_ip(source) {
+        // info!(&ctx, " Tcp : {}, UDP: {} ", tcphdr.unwrap(),udphdr.unwrap());
+
         info!(&ctx, "SRC IP: {:i}, ACTION: {}", source , action);
     }
 
     Ok(action)
 }
-// (2)
 fn block_ip(address: u32) -> bool {
     unsafe { BLOCKLIST.get(&address).is_some() }
 }
@@ -86,7 +89,7 @@ fn system_ip(address: u32) -> bool {
     unsafe { SYSTEM_LIST.get(&address).is_some() }
 }
 
-#[map] // (1)
+#[map]
 static BLOCKLIST: HashMap<u32, u32> =
     HashMap::<u32, u32>::with_max_entries(1024, 0);
 

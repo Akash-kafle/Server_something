@@ -14,6 +14,18 @@ stale.
 - **Aya API docs (userspace)** — https://docs.rs/aya
 - **Aya API docs (eBPF-side, `aya_ebpf`)** — https://docs.rs/aya-ebpf
 - **Aya main repo** — https://github.com/aya-rs/aya
+- **network-types crate (the header structs you're actually using)** —
+  https://docs.rs/network-types
+  `EthHdr`, `Ipv4Hdr`, `TcpHdr`, `UdpHdr` — exact byte layout, field
+  accessors, all `#[repr(C)]` and no_std. Check this before hand-deriving
+  offsets.
+- **network-types source (GitHub)** — https://github.com/vadorovsky/network-types
+  Worth reading the actual struct definitions when the docs.rs page is
+  ambiguous about bit-packed fields (TCP flags especially).
+- **RFC 768 — UDP** — https://www.rfc-editor.org/rfc/rfc768
+  Short enough to just read in full once. 8-byte header, no variable length.
+- **RFC 9000 — QUIC transport (also covers TCP-adjacent framing concepts)** —
+  https://www.rfc-editor.org/rfc/rfc9000
 - **awesome-aya** — https://github.com/aya-rs/awesome-aya
   Curated list of real projects built with Aya. Worth skimming for how
   other people structure header parsing.
@@ -71,6 +83,15 @@ stale.
 
 ## Phase 5 — QUIC / stretch goals (only if you actually get here)
 
+- **RFC 9000 — QUIC: A UDP-Based Multiplexed and Secure Transport** —
+  https://www.rfc-editor.org/rfc/rfc9000
+  The main spec. Section 17 has the actual packet header formats
+  (long/short) in wire-format notation.
+- **RFC 8999 — Version-Independent Properties of QUIC** —
+  https://www.rfc-editor.org/rfc/rfc8999
+  Shorter and more focused than 9000 — just the header-form bit and
+  long/short structure, without the rest of the transport spec. Better
+  starting point than jumping straight into 9000.
 - **QUIC-LB draft (expired, but this is the real spec for CID-based
   routing)** — https://datatracker.ietf.org/doc/draft-ietf-quic-load-balancers/
   Note: this draft expired and is no longer active — read it as the
@@ -78,10 +99,6 @@ stale.
   exactly the short-header CID-length problem from the roadmap.
 - **F5's reference implementation of QUIC-LB (C)** —
   https://github.com/F5Networks/quic-lb
-- **RFC 9000 — QUIC transport spec** —
-  https://www.rfc-editor.org/rfc/rfc9000
-  The actual wire format for long/short headers, connection IDs, packet
-  types. Ground truth if the QUIC-LB draft gets confusing.
 
 ---
 
