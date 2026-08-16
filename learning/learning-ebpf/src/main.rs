@@ -6,15 +6,20 @@ use aya_ebpf::{
     macros::{map,xdp}, 
     maps::HashMap,
     programs::XdpContext};
-use aya_log_ebpf::info;
+use learning_ebpf::NormalizedPacket;
 
 use core::mem;
 use network_types::{
     eth::{EthHdr, EtherType},
-    ip::{IpError, IpProto, Ipv4Hdr},
+    ip::{IpError, IpProto, Ipv4Hdr, Ipv6Hdr},
     tcp::TcpHdr,
     udp::UdpHdr,
 };
+use aya_log_ebpf::info;
+
+use crate::utils::parser::{Structure_TCP, Structure_UDP, parse_TCP, parse_UDP};
+
+mod utils;
 
 #[xdp]
 pub fn learning(ctx: XdpContext) -> u32 {
@@ -23,6 +28,8 @@ pub fn learning(ctx: XdpContext) -> u32 {
         Err(_) => xdp_action::XDP_ABORTED,
     }
 }
+
+
 
 #[inline(always)] 
 fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
@@ -39,31 +46,34 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 
 fn try_learning(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; 
-    match unsafe { (*ethhdr).ether_type() } {
-        Ok(EtherType::Ipv4) => {}
+    let normalized_hdr: NormalizedPacket = match unsafe { (*ethhdr).ether_type() } {
+        Ok(EtherType::Ipv4) => {
+             let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
+             return Ok(2);
+        },
+        Ok(EtherType::Ipv6) => {
+            let ipv6hdr: *const Ipv6Hdr = ptr_at(&ctx, EthHdr::LEN)?;
+            return Ok(1);
+        },
         _ => return Ok(xdp_action::XDP_PASS),
     }
 
     let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
     // let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
+
+    // Need to make this Proto normalized_hdr dependent not direct v4 v6 access header
     let proto = unsafe { (*ipv4hdr).proto() }
         .map_err(|IpError::InvalidProto(_proto)| ())?;
 
-    let (tcphdr, udphdr): (Option<TcpHdr>, Option<UdpHdr>) = match proto  {
-        IpProto::Tcp => {
-            let tcphdr: *const TcpHdr =
-                ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            unsafe {(Some(*tcphdr),None)}
-        }
-        IpProto::Udp => {
-            let udphdr: *const UdpHdr =
-                ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
-            unsafe { (None,Some(*udphdr)) }
-        }
+    let data: Option<utils::parser::RequestData> = match proto  {
+        IpProto::Tcp => Some(Structure_TCP()),
+        IpProto::Udp => Some(Structure_UDP()),
         _ => return Err(()),
     };    
-    
+    if !utils::parser::check_access(data.unwrap()){
+        return Ok(xdp_action::XDP_DROP);
+    }
     let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
     let source = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
     let action = 
@@ -74,8 +84,6 @@ fn try_learning(ctx: XdpContext) -> Result<u32, ()> {
     };
 
     if !system_ip(source) {
-        // info!(&ctx, " Tcp : {}, UDP: {} ", tcphdr.unwrap(),udphdr.unwrap());
-
         info!(&ctx, "SRC IP: {:i}, ACTION: {}", source , action);
     }
 
@@ -96,6 +104,7 @@ static BLOCKLIST: HashMap<u32, u32> =
 #[map]
 static SYSTEM_LIST: HashMap<u32,u32> =  
     HashMap::<u32, u32>::with_max_entries(1024, 0);
+
 
 #[cfg(not(test))]
 #[panic_handler]
