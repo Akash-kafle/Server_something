@@ -1,8 +1,9 @@
 #[derive(Debug, Clone, Copy)]
+#[repr(i32)]
 pub enum ParseError {
-    InvalidEthernet,
-    UnsupportedProtocol,
-    Truncated,
+    InvalidEthernet = 1,
+    UnsupportedProtocol = 2,
+    Truncated = 3,
 }
 
 impl core::fmt::Display for ParseError {
@@ -13,4 +14,10 @@ impl core::fmt::Display for ParseError {
             ParseError::Truncated => write!(f, "truncated packet"),
         }
     }
+}
+
+#[derive(Debug)]
+pub enum DriverError {
+    Timeout,
+    Overrun,
 }

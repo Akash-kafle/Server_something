@@ -30,12 +30,12 @@ was never the point.
 **Goal:** stop logging "received a packet" like some kind of coward. Read
 actual bytes.
 
-- [ ] Bounds-checked Ethernet read (14 bytes), branch on EtherType
-- [ ] Bounds-checked IPv4 read, pull protocol + src/dst IP
-- [ ] Log real fields, not vibes
-- [ ] Bounds-checked UDP read (protocol 17), get ports
-- [ ] Bounds-checked TCP read (protocol 6), get ports + flags
-- [ ] Actually understand why each check exists, not just cargo-cult it
+- [x] Bounds-checked Ethernet read (14 bytes), branch on EtherType
+- [x] Bounds-checked IPv4 read, pull protocol + src/dst IP
+- [x] Log real fields, not vibes
+- [x] Bounds-checked UDP read (protocol 17), get ports
+- [x] Bounds-checked TCP read (protocol 6), get ports + flags
+- [x] Actually understand why each check exists, not just cargo-cult it
 
 **Done when:** I can log the 5-tuple of anything crossing `ens3` without the
 verifier telling me my pointer arithmetic is a personal attack.
@@ -46,7 +46,7 @@ check placement, not check existence.
 
 ---
 
-## Phase 2 — make a decision,
+## Phase 2 — make a decision
 
 **Goal:** a program that does something, instead of a very expensive packet
 counter.
@@ -100,25 +100,99 @@ mechanics either way. I'm learning the shape, not setting a speed record.
 
 ---
 
-## Phase 5 — the trap I already warned myself about
+## Phase 5 — QUIC, the trap I already warned myself about
 
-Everything here is optional. Pick at most one. Do not chain them. This is
-exactly the rabbit hole that started this whole thing.
+Pick this up once 1-4 are solid. This one has a real endpoint now (see
+Phase 6), so it's less of a pure trap than it used to be — but still don't
+start it early just because it sounds cooler than bounds-checking IP
+headers.
 
 - [ ] QUIC long-header parsing, 5-tuple routing only, skip CID for now
 - [ ] QUIC short-header CID length problem — needs a real design call
       (QUIC-LB-style encoding, or a lookup)
 - [ ] Multi-buffer/frags handling for packets that don't fit in one page
-- [ ] The HTTP server. The original ask. Almost certainly its own separate,
-      boring, normal project — not bolted onto any of this.
+- [ ] Parse and log the actual Connection ID from both header forms —
+      this is the thing Phase 6 needs to exist first
+
+**Prerequisite reading before starting:** RFC 8999 (short version of the
+header-form split) before RFC 9000 (the whole spec). See `DOCS.md`.
+
+**The HTTP server. The original ask.** Almost certainly its own separate,
+boring, normal project — not bolted onto any of this. Not forgotten,
+just not this.
+
+---
+
+## Phase 6 — QUIC connection-aware NUMA steering with sched_ext
+
+**The actual engineering problem, stated properly:** QUIC connections are
+identified by Connection ID, not the classic 5-tuple, so hardware RSS
+hashing can't reliably keep one connection's packets landing on the same
+core — especially across connection migration, which is the whole point of
+QUIC. Meanwhile connection-processing state ideally stays pinned to one
+NUMA-local core the entire life of the connection, or you get exactly the
+cross-core cache-line bouncing the work-stealing scheduler project already
+had to solve, just one layer up. `sched_ext` is the piece that lets "keep
+this connection's processing on this core, NUMA-aware" be a real,
+swappable kernel scheduling policy instead of a `taskset` and a prayer.
+
+This is not a weekend add-on. Treat it as its own project phase with its
+own prerequisites, not a stretch goal bolted onto Phase 5.
+
+**Prerequisites — check these before writing any code, not after:**
+
+- [ ] `uname -r` on the VM — need 6.12+ for `sched_ext`
+      (`CONFIG_SCHED_CLASS_EXT=y`). Debian 12 bookworm ships 6.1 by default.
+      Almost certainly need backports or a newer kernel entirely. Check this
+      FIRST, before sinking time into anything else in this phase.   
+- [ ] `CONFIG_DEBUG_INFO_BTF=y` — without it, CO-RE relocations fail and
+      every BPF scheduler refuses to load with an unhelpful error. Confirm
+      before assuming a kernel bump alone is enough.   
+- [ ] Decide up front: are you building the *mechanism* and reasoning about
+      it correctly (fine in a single-node VM), or trying to actually
+      *measure* a NUMA win (needs real multi-socket hardware — check what
+      your host actually has before promising yourself a benchmark)   
+- [ ] If staying in QEMU: `-numa node,...` can fake multiple vNUMA nodes for
+      correctness testing, but won't produce meaningful latency numbers on
+      single-socket consumer hardware. Know which one you're testing for.
+
+**Build order, once prerequisites are actually satisfied:**
+
+- [ ] Confirm CID parsing from Phase 5 works reliably first — this whole
+      phase is built on trusting that extraction   
+- [ ] XDP/CPUMAP redirect: steer packets to a specific CPU based on parsed
+      CID instead of the NIC's hardware RSS hash   
+- [ ] AF_XDP socket processing pinned per-connection (builds on Phase 4)   
+- [ ] Read `github.com/sched-ext/scx` reference schedulers (`scx_simple`
+      first, it's the one to actually understand, not skim) before writing
+      a custom one   
+- [ ] Write a minimal `sched_ext` policy: keep a given connection's
+      processing task on its assigned core, NUMA-aware, don't let the
+      default scheduler migrate it away   
+- [ ] Only after the minimal version works: try to actually measure
+      something — cache misses, cross-node memory access, whatever your
+      setup can honestly show   
+
+**Done when:** you can point at a specific connection, show which core its
+packets get steered to, and show the scheduler keeping the processing
+pinned there instead of the default scheduler bouncing it around.
+
+**Honest framing:** this is the kind of problem people write blog posts or
+papers about, not a checkbox. Don't rush it because Phase 5 finally got
+QUIC parsing working — the kernel-version prerequisite alone might eat a
+session on its own.
 
 ---
 
 ## how to use this
 
 Top to bottom. Phase 3 and 4 assume 1 and 2 actually work, not "worked once
-and I moved on." If stuck mid-phase, that's the right time to go bother
-someone about it — bring the actual verifier error, not "phase 3 is hard."
+and I moved on." Phase 6 assumes Phase 5's CID parsing is solid, and has
+its own hard prerequisite (kernel version) that has nothing to do with
+skill and everything to do with checking `uname -r` before getting
+attached to an idea. If stuck mid-phase, that's the right time to go
+bother someone about it — bring the actual verifier error, not "phase 3
+is hard."
 
 Leave a one-line note under whatever phase I stop in, every session. Future
 me does not remember what past me was thinking, and past me has been wrong

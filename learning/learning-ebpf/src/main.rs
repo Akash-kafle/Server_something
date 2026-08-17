@@ -2,112 +2,119 @@
 #![no_main]
 
 use aya_ebpf::{
-    bindings::xdp_action, 
-    macros::{map,xdp}, 
-    maps::HashMap,
-    programs::XdpContext};
-
+    bindings::xdp_action, macros::xdp, programs::XdpContext,
+};
 
 use core::mem;
 use network_types::{
-    eth::{EthHdr, EtherType},
-    ip::{IpError, IpProto, Ipv4Hdr, Ipv6Hdr},
-    tcp::TcpHdr,
-    udp::UdpHdr,
+    eth::{EthHdr, EtherType}, ip::{IpProto, Ipv4Hdr, Ipv6Hdr}, tcp::TcpHdr, udp::UdpHdr,
 };
 use aya_log_ebpf::info;
-use learning_common::{NormalizedPacket, RING_BUFF};
+use learning_common::{NormalizedPacket, RING_BUFF, get_or_assign_id};
 
-use crate::utils::{error::ParseError, parser::{Structure_TCP, Structure_UDP}};
+use crate::utils::error::ParseError;
 
 mod utils;
 
 #[xdp]
 pub fn learning(ctx: XdpContext) -> u32 {
-    match try_learning(ctx) {
-        Ok(Ok(Some(packet))) => {
+    match try_learning(&ctx) {
+        Ok(Some(packet)) => {
             // Push normalized bytes safely into the ring buffer
             let _ = RING_BUFF.output::<NormalizedPacket>(&packet, 0);
-        },
-        Ok(Err(ret)) => return ret,
-        Ok(_) => {},
-        Err(_) => return xdp_action::XDP_ABORTED,
+        }
+        Ok(None) => {}
+        Err(_) => {}
     }
-    return  xdp_action::XDP_PASS;
+    xdp_action::XDP_PASS
 }
 
-
-#[inline(always)] 
-fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
+#[inline(always)]
+fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ParseError> {
     let start = ctx.data();
     let end = ctx.data_end();
     let len = mem::size_of::<T>();
 
     if start + offset + len > end {
-        return Err(());
+        return Err(ParseError::InvalidEthernet);
     }
 
     Ok((start + offset) as *const T)
 }
 
-fn try_learning(ctx: XdpContext) -> Result<Result<Option<NormalizedPacket>,u32>, ParseError> {
-    let ethhdr: *const EthHdr = ptr_at(&ctx, 0).unwrap(); 
+fn try_learning(ctx: &XdpContext) -> Result<Option<NormalizedPacket>, ParseError> {
+    let ethhdr: *const EthHdr = ptr_at(ctx, 0)?;
 
-    let iphdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN).unwrap();
-    // let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
-
-
-    // Need to make this Proto normalized_hdr dependent not direct v4 v6 access header
-    let proto = unsafe { (*iphdr).proto() }
-        .map_err(|IpError::InvalidProto(_proto)| ()).unwrap();
-
-    let iphdr = match unsafe { (*ethhdr).ether_type() }{
+    match unsafe { (*ethhdr).ether_type() } {
         Ok(EtherType::Ipv4) => {
-            
-        },
-        Ok(EtherType::Ipv6) => {},
-        _ => {},
-    };
+            let ipv4: *const Ipv4Hdr = ptr_at(ctx, EthHdr::LEN)?;
+            let proto = unsafe { (*ipv4).proto() }.map_err(|_| ParseError::Truncated)?;
+            let src = unsafe { (*ipv4).src_addr };
+            let dst = unsafe { (*ipv4).dst_addr };
 
-    let data: Option<utils::parser::RequestData> = match proto  {
-        IpProto::Tcp => Some(Structure_TCP()),
-        IpProto::Udp => Some(Structure_UDP()),
-        _ => return Err(ParseError::UnsupportedProtocol),
-    };    
-    if !utils::parser::check_access(data.unwrap()){
-        return Ok(Err(xdp_action::XDP_DROP));
+            let mut pkt = NormalizedPacket::default();
+            pkt.src_ip = u32::from_ne_bytes(src);
+            pkt.dst_ip = u32::from_ne_bytes(dst);
+            pkt.protocol = proto as u8;
+
+            let tot_len = u16::from_be_bytes(unsafe { (*ipv4).tot_len });
+            let ihl_bytes = (unsafe { (*ipv4).ihl() } as u32) * 4;
+            pkt.payload_len = (tot_len as u32).saturating_sub(ihl_bytes);
+
+            match proto {
+                IpProto::Udp => {
+                    let udphdr: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                    pkt.src_port = unsafe { (*udphdr).src_port() };
+                    pkt.dst_port = unsafe { (*udphdr).dst_port() };
+                }
+                IpProto::Tcp => {
+                    let tcphdr: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
+                    pkt.src_port = u16::from_be_bytes(unsafe { (*tcphdr).source });
+                    pkt.dst_port = u16::from_be_bytes(unsafe { (*tcphdr).dest });
+                }
+                _ => {}
+            }
+
+            info!(ctx, "This is ipv4");
+            info!(ctx, "SRC IP: {:i}, SRC PORT: {}", pkt.src_ip, pkt.src_port);
+            Ok(Some(pkt))
+        }
+        Ok(EtherType::Ipv6) => {
+            let ipv6: *const Ipv6Hdr = ptr_at(ctx, EthHdr::LEN)?;
+            let proto = unsafe { (*ipv6).next_hdr() }.map_err(|_| ParseError::Truncated)?;
+            let src = unsafe { (*ipv6).src_addr };
+            let dst = unsafe { (*ipv6).dst_addr };
+
+            let mut pkt = NormalizedPacket::default();
+            pkt.src_ip = get_or_assign_id(src);
+            pkt.dst_ip = get_or_assign_id(dst);
+            pkt.protocol = proto as u8;
+            pkt.payload_len = u16::from_be_bytes(unsafe { (*ipv6).payload_len }) as u32;
+
+            match proto {
+                IpProto::Udp => {
+                    let udphdr: *const UdpHdr = ptr_at(ctx, EthHdr::LEN + Ipv6Hdr::LEN)?;
+                    pkt.src_port = unsafe { (*udphdr).src_port() };
+                    pkt.dst_port = unsafe { (*udphdr).dst_port() };
+                }
+                IpProto::Tcp => {
+                    let tcphdr: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv6Hdr::LEN)?;
+                    pkt.src_port = u16::from_be_bytes(unsafe { (*tcphdr).source });
+                    pkt.dst_port = u16::from_be_bytes(unsafe { (*tcphdr).dest });
+                }
+                _ => {}
+            }
+
+            info!(ctx, "This is ipv6");
+            info!(ctx, "SRC IP ID: {}, SRC PORT: {}", pkt.src_ip, pkt.src_port);
+            Ok(Some(pkt))
+        }
+        _ => {
+            info!(ctx, "Got non-IP packet");
+            Ok(None)
+        }
     }
-    let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN).unwrap() };
-    let source = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
-    let action =
-    match (system_ip(source), block_ip(source)) {
-        (true, _) => xdp_action::XDP_PASS,   // system IP always wins, regardless of blocklist
-        (false, true) => xdp_action::XDP_DROP,
-        (false, false) => xdp_action::XDP_PASS,
-    };
-
-    if !system_ip(source) {
-        info!(&ctx, "SRC IP: {:i}, ACTION: {}", source , action);
-    }
-
-    Ok(Err(action))
 }
-fn block_ip(address: u32) -> bool {
-    unsafe { BLOCKLIST.get(&address).is_some() }
-}
-
-fn system_ip(address: u32) -> bool {
-    unsafe { SYSTEM_LIST.get(&address).is_some() }
-}
-
-#[map]
-static BLOCKLIST: HashMap<u32, u32> =
-    HashMap::<u32, u32>::with_max_entries(1024, 0);
-
-#[map]
-static SYSTEM_LIST: HashMap<u32,u32> =  
-    HashMap::<u32, u32>::with_max_entries(1024, 0);
-
 
 #[cfg(not(test))]
 #[panic_handler]
@@ -118,3 +125,4 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 #[unsafe(link_section = "license")]
 #[unsafe(no_mangle)]
 static LICENSE: [u8; 13] = *b"Dual MIT/GPL\0";
+
