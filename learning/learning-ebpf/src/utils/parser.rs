@@ -3,7 +3,6 @@ use core::error;
 use aya_ebpf::{
     bindings::xdp_action, macros::{map,xdp}, maps::{RingBuf, xdp}, programs::XdpContext,
 };
-use learning_ebpf::NormalizedPacket;
 
 use crate::utils::error::ParseError;
 pub struct RequestData{
@@ -40,28 +39,3 @@ pub fn check_access(
     return true;
 }
 
-// create a ring buffer for the header normalization between v4 and v6 
-#[map]
-static RING_BUFF: RingBuf = RingBuf::with_byte_size(256 * 4096, 0);
-
-#[xdp]
-pub fn normalized_packet(ctx: XdpContext)-> u32{
-    match try_parse(&ctx) {
-        Ok(Some(packet)) => {
-            // Push normalized bytes safely into the ring buffer
-            RING_BUFF.output(&packet, 0);
-            
-        }
-        _ => {}
-    }
-    xdp_action::XDP_PASS
-
-}
-
-fn try_parse(ctx: &XdpContext) -> Result<Option<NormalizedPacket>, ()> {
-    // 1. Parse Ethernet & IP (handling both IPv4 and IPv6 bytes uniformly)
-    // 2. Extract UDP/QUIC source & destination ports
-    
-    let normalized = NormalizedPacket::default;
-    Ok(Some(normalized))
-}

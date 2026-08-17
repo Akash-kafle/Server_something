@@ -16,7 +16,6 @@ struct Opt {
     iface: String,
 }
 
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();

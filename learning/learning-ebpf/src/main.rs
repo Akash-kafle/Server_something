@@ -6,7 +6,7 @@ use aya_ebpf::{
     macros::{map,xdp}, 
     maps::HashMap,
     programs::XdpContext};
-use learning_ebpf::NormalizedPacket;
+
 
 use core::mem;
 use network_types::{
@@ -16,19 +16,25 @@ use network_types::{
     udp::UdpHdr,
 };
 use aya_log_ebpf::info;
+use learning_common::{NormalizedPacket, RING_BUFF};
 
-use crate::utils::parser::{Structure_TCP, Structure_UDP, parse_TCP, parse_UDP};
+use crate::utils::{error::ParseError, parser::{Structure_TCP, Structure_UDP}};
 
 mod utils;
 
 #[xdp]
 pub fn learning(ctx: XdpContext) -> u32 {
     match try_learning(ctx) {
-        Ok(ret) => ret,
-        Err(_) => xdp_action::XDP_ABORTED,
+        Ok(Ok(Some(packet))) => {
+            // Push normalized bytes safely into the ring buffer
+            let _ = RING_BUFF.output::<NormalizedPacket>(&packet, 0);
+        },
+        Ok(Err(ret)) => return ret,
+        Ok(_) => {},
+        Err(_) => return xdp_action::XDP_ABORTED,
     }
+    return  xdp_action::XDP_PASS;
 }
-
 
 
 #[inline(always)] 
@@ -44,39 +50,36 @@ fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
     Ok((start + offset) as *const T)
 }
 
-fn try_learning(ctx: XdpContext) -> Result<u32, ()> {
-    let ethhdr: *const EthHdr = ptr_at(&ctx, 0)?; 
-    let normalized_hdr: NormalizedPacket = match unsafe { (*ethhdr).ether_type() } {
-        Ok(EtherType::Ipv4) => {
-             let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
-             return Ok(2);
-        },
-        Ok(EtherType::Ipv6) => {
-            let ipv6hdr: *const Ipv6Hdr = ptr_at(&ctx, EthHdr::LEN)?;
-            return Ok(1);
-        },
-        _ => return Ok(xdp_action::XDP_PASS),
-    }
+fn try_learning(ctx: XdpContext) -> Result<Result<Option<NormalizedPacket>,u32>, ParseError> {
+    let ethhdr: *const EthHdr = ptr_at(&ctx, 0).unwrap(); 
 
-    let ipv4hdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN)?;
+    let iphdr: *const Ipv4Hdr = ptr_at(&ctx, EthHdr::LEN).unwrap();
     // let source_addr = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
 
 
     // Need to make this Proto normalized_hdr dependent not direct v4 v6 access header
-    let proto = unsafe { (*ipv4hdr).proto() }
-        .map_err(|IpError::InvalidProto(_proto)| ())?;
+    let proto = unsafe { (*iphdr).proto() }
+        .map_err(|IpError::InvalidProto(_proto)| ()).unwrap();
+
+    let iphdr = match unsafe { (*ethhdr).ether_type() }{
+        Ok(EtherType::Ipv4) => {
+            
+        },
+        Ok(EtherType::Ipv6) => {},
+        _ => {},
+    };
 
     let data: Option<utils::parser::RequestData> = match proto  {
         IpProto::Tcp => Some(Structure_TCP()),
         IpProto::Udp => Some(Structure_UDP()),
-        _ => return Err(()),
+        _ => return Err(ParseError::UnsupportedProtocol),
     };    
     if !utils::parser::check_access(data.unwrap()){
-        return Ok(xdp_action::XDP_DROP);
+        return Ok(Err(xdp_action::XDP_DROP));
     }
-    let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
+    let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN).unwrap() };
     let source = u32::from_be_bytes(unsafe { (*ipv4hdr).src_addr });
-    let action = 
+    let action =
     match (system_ip(source), block_ip(source)) {
         (true, _) => xdp_action::XDP_PASS,   // system IP always wins, regardless of blocklist
         (false, true) => xdp_action::XDP_DROP,
@@ -87,7 +90,7 @@ fn try_learning(ctx: XdpContext) -> Result<u32, ()> {
         info!(&ctx, "SRC IP: {:i}, ACTION: {}", source , action);
     }
 
-    Ok(action)
+    Ok(Err(action))
 }
 fn block_ip(address: u32) -> bool {
     unsafe { BLOCKLIST.get(&address).is_some() }
