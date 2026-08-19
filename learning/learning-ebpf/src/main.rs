@@ -71,6 +71,10 @@ fn try_learning(ctx: &XdpContext) -> Result<Option<NormalizedPacket>, ParseError
                     let tcphdr: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv4Hdr::LEN)?;
                     pkt.src_port = u16::from_be_bytes(unsafe { (*tcphdr).source });
                     pkt.dst_port = u16::from_be_bytes(unsafe { (*tcphdr).dest });
+
+                    if pkt.src_port == 22 || pkt.dst_port == 22 {
+                        return Ok(None);
+                    }
                 }
                 _ => {}
             }
@@ -101,6 +105,10 @@ fn try_learning(ctx: &XdpContext) -> Result<Option<NormalizedPacket>, ParseError
                     let tcphdr: *const TcpHdr = ptr_at(ctx, EthHdr::LEN + Ipv6Hdr::LEN)?;
                     pkt.src_port = u16::from_be_bytes(unsafe { (*tcphdr).source });
                     pkt.dst_port = u16::from_be_bytes(unsafe { (*tcphdr).dest });
+
+                    if pkt.src_port == 22 || pkt.dst_port == 22 {
+                        return Ok(None);
+                    }
                 }
                 _ => {}
             }
@@ -115,6 +123,7 @@ fn try_learning(ctx: &XdpContext) -> Result<Option<NormalizedPacket>, ParseError
         }
     }
 }
+
 
 #[cfg(not(test))]
 #[panic_handler]

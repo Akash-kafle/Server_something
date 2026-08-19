@@ -6,6 +6,7 @@ use aya::{
 use clap::Parser;
 use learning_common::NormalizedPacket;
 use log::{info, warn};
+use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use tokio::signal;
 
@@ -13,6 +14,9 @@ use tokio::signal;
 struct Opt {
     #[clap(short, long, default_value = "ens3")]
     iface: String,
+
+    #[clap(short, long, use_value_delimiter = true)]
+    skip_ips: Vec<Ipv4Addr>,
 }
 
 #[tokio::main]
@@ -68,6 +72,8 @@ async fn main() -> anyhow::Result<()> {
 
     info!("Successfully loaded and attached XDP program to interface: {}", opt.iface);
 
+    let skip_ips: HashSet<Ipv4Addr> = opt.skip_ips.into_iter().collect();
+
     // Stream normalized packet records from ring buffer
     if let Some(map) = ebpf.take_map("RING_BUFF") {
         let ring_buf = RingBuf::try_from(map)?;
@@ -84,6 +90,11 @@ async fn main() -> anyhow::Result<()> {
                         let packet = unsafe { *(item.as_ptr() as *const NormalizedPacket) };
                         let src_ip = Ipv4Addr::from(u32::to_be(packet.src_ip));
                         let dst_ip = Ipv4Addr::from(u32::to_be(packet.dst_ip));
+
+                        if skip_ips.contains(&src_ip) || skip_ips.contains(&dst_ip) {
+                            continue;
+                        }
+
                         let proto_str = match packet.protocol {
                             6 => "TCP",
                             17 => "UDP",

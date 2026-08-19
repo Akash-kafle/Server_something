@@ -44,6 +44,12 @@ verifier telling me my pointer arithmetic is a personal attack.
 verifier rejects something that looks obviously fine, that's the bug —
 check placement, not check existence.
 
+**Phase closed.** Ring buffer + `aya-log` streaming both v4 and v6 5-tuples
+to userspace, `NormalizedPacket` struct carrying src/dst/ports/protocol/
+payload_len. v6 addresses go through `get_or_assign_id` since the struct
+fields are `u32` — worth a comment in code explaining that's an ID mapping,
+not a real address, so future me doesn't mistake it for an IP.
+
 ---
 
 ## Phase 2 — make a decision
@@ -51,6 +57,14 @@ check placement, not check existence.
 **Goal:** a program that does something, instead of a very expensive packet
 counter.
 
+- [x] ICMPv4/ICMPv6 header normalization — raw `type`/`code`/`checksum`
+      preserved (not translated to a semantic enum), version tag carried
+      alongside. Decided against early translation: v4 and v6 don't share
+      a type/code space (v6 echo is type 128, not 8; v6 also carries NDP,
+      types 133–137, with no v4 equivalent at all), so the rule table has
+      to be version-aware regardless of representation. Raw values kept
+      because downstream wants them for more than just the drop decision.
+- [ ] Version-aware ICMP rule table (`(version, type, code)` → decision)
 - [ ] Drop packets on one condition (ICMP, a port, whatever)
 - [ ] Prove the drop is real, not imagined
 - [ ] Add a second condition, branch cleanly instead of building an
@@ -76,6 +90,11 @@ this point.
 
 **Done when:** userspace can see live flow state the kernel side wrote.
 This is the actual trick real load balancers use. Small scale, same idea.
+
+**Note:** ICMP rate-limiting and source-velocity (scan/sweep) detection
+both live here, not Phase 2 — they need a counter with a time window per
+source, which is state, which is this phase. Don't try to force them into
+Phase 2's stateless shape.
 
 ---
 
@@ -181,6 +200,41 @@ pinned there instead of the default scheduler bouncing it around.
 papers about, not a checkbox. Don't rush it because Phase 5 finally got
 QUIC parsing working — the kernel-version prerequisite alone might eat a
 session on its own.
+
+---
+
+## Parking lot — ideas that showed up mid-session and need to wait
+
+Not phases. Not scheduled. Written down so they survive past the session
+that produced them.
+
+### Core designation / cache-locality enforcement
+
+Distinct from Phase 6's QUIC/CID steering — this one is about flows in
+general, not QUIC specifically. The idea: assign a flow to a designated
+core on first sight (5-tuple → core, `LRU_HASH`), enforce it on later
+packets via `CPUMAP` redirect, and treat a core mismatch as a signal the
+routing has drifted from where the flow's state is presumably cache-hot.
+
+Open problems, not yet solved, don't start coding until they are:
+
+- Kernel/hardware primitives already exist for a version of this — RSS is
+  supposed to guarantee flow-to-core stability on its own, and RFS
+  (`Documentation/networking/scaling.rst`) already does app-aware steering
+  for exactly this cache-locality reason. Figure out what this project adds
+  over just using RFS before building a parallel version of it.
+- "Cache is still hot on core N" is not something XDP can observe directly —
+  no visibility into actual L1/L2/L3 occupancy from kernel-space BPF. Any
+  staleness check (time since last packet, ICMP-derived timing/velocity
+  signal, whatever) is a *proxy heuristic* for eviction risk, not a
+  measurement of it. Say that explicitly in whatever gets written — don't
+  let "5 minutes" quietly become a literal claim about cache state.
+- Genuinely undecided: hard TTL-based reassignment vs. a probabilistic
+  confidence signal that factors into (not solely decides) the redirect.
+  Depends on reading actual cache-eviction-behavior research first, not on
+  guessing a number.
+- Depends on Phase 3 (stateful `LRU_HASH` flow tracking) existing first.
+  Don't reach for this before Phase 3 is real.
 
 ---
 
